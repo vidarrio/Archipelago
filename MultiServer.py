@@ -8,11 +8,13 @@ import copy
 import datetime
 import functools
 import hashlib
+import hmac
 import inspect
 import itertools
 import logging
 import math
 import operator
+import os
 import pickle
 import random
 import shlex
@@ -156,6 +158,7 @@ class Client(Endpoint):
         "no_items",
         "no_locations",
         "no_text",
+        "quiet",
     )
 
     version: Version
@@ -171,6 +174,7 @@ class Client(Endpoint):
     no_items: bool
     no_locations: bool
     no_text: bool
+    quiet: bool
 
     def __init__(self, socket: "ServerConnection", ctx: Context) -> None:
         super().__init__(socket)
@@ -185,6 +189,7 @@ class Client(Endpoint):
         self.remote_items = False
         self.remote_start_inventory = False
         self.no_items = False
+        self.quiet = False
         self.no_locations = False
         self.no_text = False
 
@@ -956,6 +961,14 @@ async def on_client_disconnected(ctx: Context, client: Client):
 _non_game_messages = {"HintGame": "hinting", "Tracker": "tracking", "TextOnly": "viewing"}
 """ { tag: ui_message } """
 
+quiet_key = os.environ.get("BIFROST_QUIET_KEY", "")
+""" Bifrost's own clients (which connect briefly and often) present this key as "bifrost_key" in Connect; they join,
+leave, change tags and use !admin without announcements to everyone. Empty: no client is quiet. """
+
+
+def is_quiet_key(key: typing.Any) -> bool:
+    return bool(quiet_key) and isinstance(key, str) and hmac.compare_digest(key.encode(), quiet_key.encode())
+
 
 async def on_client_joined(ctx: Context, client: Client):
     if ctx.client_game_state[client.team, client.slot] == ClientStatus.CLIENT_UNKNOWN:
@@ -969,11 +982,12 @@ async def on_client_joined(ctx: Context, client: Client):
     else:
         final_verb = "playing"
 
-    ctx.broadcast_text_all(
-        f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) "
-        f"{final_verb} {ctx.games[client.slot]} has joined. "
-        f"Client({version_str}), {client.tags}.",
-        {"type": "Join", "team": client.team, "slot": client.slot, "tags": client.tags})
+    if not client.quiet:
+        ctx.broadcast_text_all(
+            f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) "
+            f"{final_verb} {ctx.games[client.slot]} has joined. "
+            f"Client({version_str}), {client.tags}.",
+            {"type": "Join", "team": client.team, "slot": client.slot, "tags": client.tags})
     ctx.notify_client(client, "Now that you are connected, "
                               "you can use !help to list commands to run via the server. "
                               "If your client supports it, "
@@ -1000,10 +1014,11 @@ async def on_client_left(ctx: Context, client: Client):
     else:
         final_verb = "left"
 
-    ctx.broadcast_text_all(
-        f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has {final_verb} the game. "
-        f"Client({version_str}), {client.tags}.",
-        {"type": "Part", "team": client.team, "slot": client.slot})
+    if not client.quiet:
+        ctx.broadcast_text_all(
+            f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has {final_verb} the game. "
+            f"Client({version_str}), {client.tags}.",
+            {"type": "Part", "team": client.team, "slot": client.slot})
 
 
 async def countdown(ctx: Context, timer: int):
@@ -1456,8 +1471,10 @@ class ClientMessageProcessor(CommonCommandProcessor):
                 # disallow others from knowing what the new remote administration password is.
                 "!admin /option server_password"):
             output = f"!admin /option server_password {('*' * random.randint(4, 16))}"
-        self.ctx.broadcast_text_all(self.ctx.get_aliased_name(self.client.team, self.client.slot) + ': ' + output,
-                                    {"type": "Chat", "team": self.client.team, "slot": self.client.slot, "message": output})
+        if not self.client.quiet:
+            self.ctx.broadcast_text_all(self.ctx.get_aliased_name(self.client.team, self.client.slot) + ': ' + output,
+                                        {"type": "Chat", "team": self.client.team, "slot": self.client.slot,
+                                         "message": output})
 
         if not self.ctx.server_password:
             self.output("Sorry, Remote administration is disabled")
@@ -1914,6 +1931,7 @@ async def process_client_cmd(ctx: Context, client: Client, args: dict):
             ctx.clients[team][slot].append(client)
             client.version = args['version']
             client.tags = args['tags']
+            client.quiet = is_quiet_key(args.get("bifrost_key"))
             client.no_locations = bool(client.tags & _non_game_messages.keys())
             # set NoText for old PopTracker clients that predate the tag to save traffic
             client.no_text = "NoText" in client.tags or ("PopTracker" in client.tags and client.version < (0, 5, 1))
@@ -1992,10 +2010,11 @@ async def process_client_cmd(ctx: Context, client: Client, args: dict):
                     client.no_text = "NoText" in client.tags or (
                         "PopTracker" in client.tags and client.version < (0, 5, 1)
                     )
-                    ctx.broadcast_text_all(
-                        f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has changed tags "
-                        f"from {old_tags} to {client.tags}.",
-                        {"type": "TagsChanged", "team": client.team, "slot": client.slot, "tags": client.tags})
+                    if not client.quiet:
+                        ctx.broadcast_text_all(
+                            f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has changed tags "
+                            f"from {old_tags} to {client.tags}.",
+                            {"type": "TagsChanged", "team": client.team, "slot": client.slot, "tags": client.tags})
 
         elif cmd == 'Sync':
             start_inventory = get_start_inventory(ctx, client.slot, client.remote_start_inventory)
