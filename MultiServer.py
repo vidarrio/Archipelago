@@ -956,6 +956,10 @@ async def on_client_disconnected(ctx: Context, client: Client):
 _non_game_messages = {"HintGame": "hinting", "Tracker": "tracking", "TextOnly": "viewing"}
 """ { tag: ui_message } """
 
+quiet_tag = "Bifrost"
+""" Clients with this tag (Bifrost's own tools, which connect briefly and often) join, leave, change tags
+and use !admin without announcements to everyone. """
+
 
 async def on_client_joined(ctx: Context, client: Client):
     if ctx.client_game_state[client.team, client.slot] == ClientStatus.CLIENT_UNKNOWN:
@@ -969,11 +973,12 @@ async def on_client_joined(ctx: Context, client: Client):
     else:
         final_verb = "playing"
 
-    ctx.broadcast_text_all(
-        f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) "
-        f"{final_verb} {ctx.games[client.slot]} has joined. "
-        f"Client({version_str}), {client.tags}.",
-        {"type": "Join", "team": client.team, "slot": client.slot, "tags": client.tags})
+    if quiet_tag not in client.tags:
+        ctx.broadcast_text_all(
+            f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) "
+            f"{final_verb} {ctx.games[client.slot]} has joined. "
+            f"Client({version_str}), {client.tags}.",
+            {"type": "Join", "team": client.team, "slot": client.slot, "tags": client.tags})
     ctx.notify_client(client, "Now that you are connected, "
                               "you can use !help to list commands to run via the server. "
                               "If your client supports it, "
@@ -1000,10 +1005,11 @@ async def on_client_left(ctx: Context, client: Client):
     else:
         final_verb = "left"
 
-    ctx.broadcast_text_all(
-        f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has {final_verb} the game. "
-        f"Client({version_str}), {client.tags}.",
-        {"type": "Part", "team": client.team, "slot": client.slot})
+    if quiet_tag not in client.tags:
+        ctx.broadcast_text_all(
+            f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has {final_verb} the game. "
+            f"Client({version_str}), {client.tags}.",
+            {"type": "Part", "team": client.team, "slot": client.slot})
 
 
 async def countdown(ctx: Context, timer: int):
@@ -1456,8 +1462,10 @@ class ClientMessageProcessor(CommonCommandProcessor):
                 # disallow others from knowing what the new remote administration password is.
                 "!admin /option server_password"):
             output = f"!admin /option server_password {('*' * random.randint(4, 16))}"
-        self.ctx.broadcast_text_all(self.ctx.get_aliased_name(self.client.team, self.client.slot) + ': ' + output,
-                                    {"type": "Chat", "team": self.client.team, "slot": self.client.slot, "message": output})
+        if quiet_tag not in self.client.tags:
+            self.ctx.broadcast_text_all(self.ctx.get_aliased_name(self.client.team, self.client.slot) + ': ' + output,
+                                        {"type": "Chat", "team": self.client.team, "slot": self.client.slot,
+                                         "message": output})
 
         if not self.ctx.server_password:
             self.output("Sorry, Remote administration is disabled")
@@ -1992,10 +2000,11 @@ async def process_client_cmd(ctx: Context, client: Client, args: dict):
                     client.no_text = "NoText" in client.tags or (
                         "PopTracker" in client.tags and client.version < (0, 5, 1)
                     )
-                    ctx.broadcast_text_all(
-                        f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has changed tags "
-                        f"from {old_tags} to {client.tags}.",
-                        {"type": "TagsChanged", "team": client.team, "slot": client.slot, "tags": client.tags})
+                    if quiet_tag not in old_tags and quiet_tag not in client.tags:
+                        ctx.broadcast_text_all(
+                            f"{ctx.get_aliased_name(client.team, client.slot)} (Team #{client.team + 1}) has changed tags "
+                            f"from {old_tags} to {client.tags}.",
+                            {"type": "TagsChanged", "team": client.team, "slot": client.slot, "tags": client.tags})
 
         elif cmd == 'Sync':
             start_inventory = get_start_inventory(ctx, client.slot, client.remote_start_inventory)
