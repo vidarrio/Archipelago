@@ -784,7 +784,9 @@ class Context:
         self.hints.update(savedata["hints"])
 
         self.name_aliases.update(savedata["name_aliases"])
-        self.client_game_state.update(savedata["client_game_state"])
+        # Nobody's connected yet. Only a goal outlasts a connection; the rest may be left from a server that was killed.
+        self.client_game_state.update({team_slot: status if status == ClientStatus.CLIENT_GOAL else ClientStatus.CLIENT_UNKNOWN
+                                       for team_slot, status in savedata["client_game_state"].items()})
         self.client_connection_timers.update(
             {tuple(key): datetime.datetime.fromtimestamp(value, datetime.timezone.utc) for key, value
              in savedata["client_connection_timers"]})
@@ -1055,7 +1057,7 @@ def is_quiet_key(key: typing.Any) -> bool:
 
 
 async def on_client_joined(ctx: Context, client: Client):
-    if ctx.client_game_state[client.team, client.slot] == ClientStatus.CLIENT_UNKNOWN:
+    if not client.quiet and ctx.client_game_state[client.team, client.slot] == ClientStatus.CLIENT_UNKNOWN:
         update_client_status(ctx, client, ClientStatus.CLIENT_CONNECTED)
     version_str = '.'.join(str(x) for x in client.version)
 
@@ -1085,7 +1087,7 @@ async def on_client_joined(ctx: Context, client: Client):
 
 
 async def on_client_left(ctx: Context, client: Client):
-    if len(ctx.clients[client.team][client.slot]) < 1:
+    if not client.quiet and all(other.quiet for other in ctx.clients[client.team][client.slot]):
         update_client_status(ctx, client, ClientStatus.CLIENT_UNKNOWN)
         ctx.client_connection_timers[client.team, client.slot] = datetime.datetime.now(datetime.timezone.utc)
 
@@ -2028,6 +2030,8 @@ async def process_client_cmd(ctx: Context, client: Client, args: dict):
                 "slot_info": ctx.slot_info,
                 "hint_points": get_slot_points(ctx, team, slot),
             }
+            if client.quiet:
+                connected_packet["bifrost_status"] = True
             reply = [connected_packet]
             start_inventory = get_start_inventory(ctx, slot, client.remote_start_inventory)
             items = get_received_items(ctx, client.team, client.slot, client.remote_items)
